@@ -34,22 +34,22 @@ def main(run):
     action_dim = 39
     agent = SAC(state_dim, action_dim, hidden_dim = 512)
 
-    pre_obs_norm_step = 10000
-    reward_rms = RunningMeanStd()
-    obs_rms = RunningMeanStd(1, state_dim)
-    steps = 0
-    next_obs = []
-    print('Start to initialize observation normalization ...')
-    while steps < pre_obs_norm_step:
-        steps += num_worker
-        actions = [np.random.randn(action_dim) for _ in range(num_worker)]
-        env_info = env.step(actions)[default_brain]
-        obs = env_info.vector_observations
-        for o in obs:
-            next_obs.append(o)
-    next_obs = np.stack(next_obs)
-    obs_rms.update(next_obs)
-    print('End to initialize')
+    # pre_obs_norm_step = 10000
+    # reward_rms = RunningMeanStd()
+    # obs_rms = RunningMeanStd(1, state_dim)
+    # steps = 0
+    # next_obs = []
+    # print('Start to initialize observation normalization ...')
+    # while steps < pre_obs_norm_step:
+    #     steps += num_worker
+    #     actions = [np.random.randn(action_dim) for _ in range(num_worker)]
+    #     env_info = env.step(actions)[default_brain]
+    #     obs = env_info.vector_observations
+    #     for o in obs:
+    #         next_obs.append(o)
+    # next_obs = np.stack(next_obs)
+    # obs_rms.update(next_obs)
+    # print('End to initialize')
 
     LOG = Logging(run)
     LOG.create("score")
@@ -61,8 +61,9 @@ def main(run):
     states = env_info.vector_observations
     while t <= max_t:
         t += 1
-        action = agent.act((np.float32(states) - obs_rms.mean)/np.sqrt(obs_rms.var))
-        env_info = env.step(actions)[default_brain]
+        # action = agent.act((np.float32(states) - obs_rms.mean)/np.sqrt(obs_rms.var))
+        actions = agent.act(states)
+        env_info = env.step(scale_action(actions))[default_brain]
 
         obs = env_info.vector_observations
         next_states = obs
@@ -75,11 +76,12 @@ def main(run):
                     buffer_r[j] = agent_r[j]
                     agent_r[j] = 0
 
-        agent.step((np.float32(states) - obs_rms.mean)/np.sqrt(obs_rms.var),
-                    actions,
-                    rewards,
-                    (np.float32(next_states) - obs_rms.mean) / np.sqrt(obs_rms.var),
-                    dones)
+        # agent.step((np.float32(states) - obs_rms.mean)/np.sqrt(obs_rms.var),
+        #             actions,
+        #             rewards,
+        #             (np.float32(next_states) - obs_rms.mean) / np.sqrt(obs_rms.var),
+        #             dones)
+        agent.step(states, actions, rewards, next_states, dones)
 
         states = next_states
         if t % 1000 == 0:

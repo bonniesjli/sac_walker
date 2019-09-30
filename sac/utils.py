@@ -59,3 +59,12 @@ class RunningMeanStd(object):
         self.mean = new_mean
         self.var = new_var
         self.count = new_count
+
+def scale_action(action):
+    lb = -1
+    ub = 1
+    action = np.array(action)
+    scaled_action = lb + (action + 1.) * 0.5 * (ub - lb)
+    scaled_action = np.clip(scaled_action, lb, ub)
+
+    return scaled_action
