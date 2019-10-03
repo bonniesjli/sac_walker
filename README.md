@@ -1,6 +1,6 @@
 ### Soft Actor Critic
 ------------
-This is a pytorch implementation of [Soft Actor-Critic Algorithms and Applications](https://arxiv.org/pdf/1812.05905.pdf). <br>
+This is a pytorch implementation of [Soft Actor-Critic Algorithms and Applications](https://arxiv.org/pdf/1812.05905.pdf) running on the walked environment in Unity ML. <br>
 This doc includes SAC module usage and instructions to run the experiments.
 ##### TO DOs
 - [ ] add requirements and dependencies <br>
@@ -19,5 +19,6 @@ while evaluate:
 
 #### Usage
 ```
+cd sac
 python walker.py --system <linux/window>
 ```
