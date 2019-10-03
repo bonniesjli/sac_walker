@@ -8,7 +8,6 @@ import itertools
 import torch
 from sac import SAC
 from tensorboardX import SummaryWriter
-from replay_memory import ReplayMemory
 
 parser = argparse.ArgumentParser(description='PyTorch Soft Actor-Critic Args')
 parser.add_argument('--env', default="walker",
