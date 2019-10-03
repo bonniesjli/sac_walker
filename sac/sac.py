@@ -53,9 +53,9 @@ class SAC(object):
             _, _, action = self.policy.sample(state)
         return action.detach().cpu().numpy()[0]
 
-    def step(self, transition):
+    def step(self, states, actions, rewards, next_states, dones):
         # transition: (state, action, reward, next_state, done)
-        for state, action, reward, next_state, done in zip(*transition):
+        for state, action, reward, next_state, done in zip(states, actions, rewards, next_states, dones):
             self.buffer.add(state, action, reward, next_state, done)
             if self.buffer.sample_ready():
                 for i in range(self.updates_per_step):

@@ -86,8 +86,7 @@ while total_numsteps <= args.num_steps:
     next_states = env_info.vector_observations
     rewards = env_info.rewards
     dones = env_info.local_done
-    transition = (states, actions, rewards, next_states, dones)
-    critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha = agent.step(transition)
+    critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha = agent.step(states, actions, rewards, next_states, dones)
 
     writer.add_scalar('loss/critic_1', critic_1_loss, total_numsteps)
     writer.add_scalar('loss/critic_2', critic_2_loss, total_numsteps)
