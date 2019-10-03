@@ -65,7 +65,8 @@ class SAC(object):
                 critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha = loss
         if not self.buffer.sample_ready():
             return 0., 0., 0., 0., 0.
-        return critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha
+        else:
+            return critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha
 
     def learn(self, batch):
         # Sample a batch from memory

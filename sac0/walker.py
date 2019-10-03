@@ -57,9 +57,6 @@ env = UnityEnvironment(fetch_env(args.env, args.system))
 default_brain = env.brain_names[0]
 brain = env.brains[default_brain]
 
-from pprint import pprint
-pprint(env)
-pprint(brain)
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
@@ -76,11 +73,9 @@ writer = SummaryWriter(logdir='runs/{}_SAC_{}_{}_{}'.format(datetime.datetime.no
 
 # Training Loop
 total_numsteps = 0
-updates = 0
 
 agent_reward = np.zeros(num_worker)
 buffer_reward = np.zeros(num_worker)
-episode_steps = 0
 done = False
 env_info = env.reset(train_mode = True)[default_brain]
 states = env_info.vector_observations
@@ -109,11 +104,11 @@ while total_numsteps <= args.num_steps:
     transition = (states, actions, rewards, next_states, dones)
     critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha = agent.step(transition)
 
-    writer.add_scalar('loss/critic_1', critic_1_loss, updates)
-    writer.add_scalar('loss/critic_2', critic_2_loss, updates)
-    writer.add_scalar('loss/policy', policy_loss, updates)
-    writer.add_scalar('loss/entropy_loss', ent_loss, updates)
-    writer.add_scalar('entropy_temprature/alpha', alpha, updates)
+    writer.add_scalar('loss/critic_1', critic_1_loss, total_numsteps)
+    writer.add_scalar('loss/critic_2', critic_2_loss, total_numsteps)
+    writer.add_scalar('loss/policy', policy_loss, total_numsteps)
+    writer.add_scalar('loss/entropy_loss', ent_loss, total_numsteps)
+    writer.add_scalar('entropy_temprature/alpha', alpha, total_numsteps)
 
     total_numsteps += 1
     agent_reward += rewards
