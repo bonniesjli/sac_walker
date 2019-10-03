@@ -1,104 +1,141 @@
+import os
 import torch
-import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
-from torch.distributions import Normal
-import numpy as np
+from torch.optim import Adam
+from utils import soft_update, hard_update
+from model import GaussianPolicy, QNetwork, DeterministicPolicy
+from buffer import ReplayBuffer
 
-from model import ValueNetwork, SoftQNetwork, PolicyNetwork
-from utils import ReplayBuffer
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+class SAC(object):
+    def __init__(self, num_inputs, action_space, args):
 
-class SAC():
-    def __init__(self,
-                 state_dim,
-                 action_dim,
-                 hidden_dim,
-                 buffer_size = int(1e6),
-                 batch_size = 128,
-                 learning_rate = 3e-4,
-                 learn_every = 4):
+        self.gamma = args.gamma
+        self.tau = args.tau
+        self.alpha = args.alpha
+        self.updates_per_step = args.updates_per_step
+        self.updates = 0
 
-        self.soft_q_net = SoftQNetwork(state_dim, action_dim, hidden_dim).to(device)
-        self.policy_net = PolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
+        self.policy_type = args.policy
+        self.target_update_interval = args.target_update_interval
+        self.automatic_entropy_tuning = args.automatic_entropy_tuning
 
-        self.value_net = ValueNetwork(state_dim, hidden_dim).to(device)
-        self.target_value_net = ValueNetwork(state_dim, hidden_dim).to(device)
-        for target_param, param in zip(self.target_value_net.parameters(), self.value_net.parameters()):
-            target_param.data.copy_(param.data)
+        self.device = torch.device("cuda" if args.cuda else "cpu")
+        self.buffer = ReplayBuffer(args.buffer_size, args.batch_size, self.device)
 
-        self.soft_q_criterion = nn.MSELoss()
-        self.value_criterion = nn.MSELoss()
-        self.value_optimizer  = optim.Adam(self.value_net.parameters(), lr=learning_rate)
-        self.soft_q_optimizer = optim.Adam(self.soft_q_net.parameters(), lr=learning_rate)
-        self.policy_optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
+        self.critic = QNetwork(num_inputs, action_space.shape[0], args.hidden_size).to(device=self.device)
+        self.critic_optim = Adam(self.critic.parameters(), lr=args.lr)
 
-        self.buffer = ReplayBuffer(buffer_size, batch_size)
+        self.critic_target = QNetwork(num_inputs, action_space.shape[0], args.hidden_size).to(self.device)
+        hard_update(self.critic_target, self.critic)
 
-        self.t_step = 0
-        self.learn_every = learn_every
-        self.batch_size = batch_size
+        if self.policy_type == "Gaussian":
+            # Target Entropy = −dim(A) (e.g. , -6 for HalfCheetah-v2) as given in the paper
+            if self.automatic_entropy_tuning == True:
+                self.target_entropy = -torch.prod(torch.Tensor(action_space.shape).to(self.device)).item()
+                self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+                self.alpha_optim = Adam([self.log_alpha], lr=args.lr)
 
-    def act(self, state):
-        action = self.policy_net.get_action(state)
-        return action
+            self.policy = GaussianPolicy(num_inputs, action_space.shape[0], args.hidden_size, action_space).to(self.device)
+            self.policy_optim = Adam(self.policy.parameters(), lr=args.lr)
 
-    def step(self, states, actions, rewards, next_states, dones):
-        for state, action, reward, next_state, done in zip(states, actions, rewards, next_states, dones):
+        else:
+            self.alpha = 0
+            self.automatic_entropy_tuning = False
+            self.policy = DeterministicPolicy(num_inputs, action_space.shape[0], args.hidden_size, action_space).to(self.device)
+            self.policy_optim = Adam(self.policy.parameters(), lr=args.lr)
+
+    def act(self, state, eval=False):
+        state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
+        if eval == False:
+            action, _, _ = self.policy.sample(state)
+        else:
+            _, _, action = self.policy.sample(state)
+        return action.detach().cpu().numpy()[0]
+
+    def step(self, transition):
+        # transition: (state, action, reward, next_state, done)
+        for state, action, reward, next_state, done in zip(*transition):
             self.buffer.add(state, action, reward, next_state, done)
-        self.t_step += 0
-        if self.t_step % self.learn_every == 0:
-            if self.buffer.__len__() > self.batch_size:
-                batch = self.buffer.sample()
-                self.learn(batch)
+            if self.buffer.sample_ready():
+                for i in range(self.updates_per_step):
+                    batch = self.buffer.sample()
+                    loss = self.learn(batch)
+                    self.updates += 1
+                critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha = loss
+        if not self.buffer.sample_ready():
+            return 0., 0., 0., 0., 0.
+        else:
+            return critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha
 
-    def learn(self,
-              batch,
-              gamma=0.99,
-              mean_lambda=1e-3,
-              std_lambda=1e-3,
-              z_lambda=0.0):
+    def learn(self, batch):
+        state_batch, action_batch, reward_batch, next_state_batch, mask_batch = batch
 
-        state, action, reward, next_state, done = batch
+        with torch.no_grad():
+            next_state_action, next_state_log_pi, _ = self.policy.sample(next_state_batch)
+            qf1_next_target, qf2_next_target = self.critic_target(next_state_batch, next_state_action)
+            min_qf_next_target = torch.min(qf1_next_target, qf2_next_target) - self.alpha * next_state_log_pi
+            next_q_value = reward_batch + mask_batch * self.gamma * (min_qf_next_target)
 
-        expected_q_value = self.soft_q_net(state, action)
-        expected_value = self.value_net(state)
-        new_action, log_prob, z, mean, log_std = self.policy_net.evaluate(state)
+        qf1, qf2 = self.critic(state_batch, action_batch)
+        qf1_loss = F.mse_loss(qf1, next_q_value)
+        qf2_loss = F.mse_loss(qf2, next_q_value)
 
-        target_value = self.target_value_net(next_state)
-        next_q_value = reward + (1 - done) * gamma * target_value
-        q_value_loss = self.soft_q_criterion(expected_q_value, next_q_value.detach())
+        pi, log_pi, _ = self.policy.sample(state_batch)
 
-        expected_new_q_value = self.soft_q_net(state, new_action)
-        next_value = expected_new_q_value - log_prob
-        value_loss = self.value_criterion(expected_value, next_value.detach())
+        qf1_pi, qf2_pi = self.critic(state_batch, pi)
+        min_qf_pi = torch.min(qf1_pi, qf2_pi)
 
-        log_prob_target = expected_new_q_value - expected_value
-        policy_loss = (log_prob * (log_prob - log_prob_target).detach()).mean()
+        policy_loss = ((self.alpha * log_pi) - min_qf_pi).mean() # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))]
 
+        self.critic_optim.zero_grad()
+        qf1_loss.backward()
+        self.critic_optim.step()
 
-        mean_loss = mean_lambda * mean.pow(2).mean()
-        std_loss = std_lambda * log_std.pow(2).mean()
-        z_loss = z_lambda * z.pow(2).sum(1).mean()
+        self.critic_optim.zero_grad()
+        qf2_loss.backward()
+        self.critic_optim.step()
 
-        policy_loss += mean_loss + std_loss + z_loss
-
-        self.soft_q_optimizer.zero_grad()
-        q_value_loss.backward()
-        self.soft_q_optimizer.step()
-
-        self.value_optimizer.zero_grad()
-        value_loss.backward()
-        self.value_optimizer.step()
-
-        self.policy_optimizer.zero_grad()
+        self.policy_optim.zero_grad()
         policy_loss.backward()
-        self.policy_optimizer.step()
+        self.policy_optim.step()
 
-        self.soft_update()
-        # print ("learning iter complete")
+        if self.automatic_entropy_tuning:
+            alpha_loss = -(self.log_alpha * (log_pi + self.target_entropy).detach()).mean()
 
-    def soft_update(self, soft_tau=1e-2):
-        for target_param, param in zip(self.target_value_net.parameters(), self.value_net.parameters()):
-            target_param.data.copy_(target_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+            self.alpha_optim.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optim.step()
+
+            self.alpha = self.log_alpha.exp()
+            alpha_tlogs = self.alpha.clone() # For TensorboardX logs
+        else:
+            alpha_loss = torch.tensor(0.).to(self.device)
+            alpha_tlogs = torch.tensor(self.alpha) # For TensorboardX logs
+
+
+        if self.updates % self.target_update_interval == 0:
+            soft_update(self.critic_target, self.critic, self.tau)
+
+        return (qf1_loss.item(), qf2_loss.item(), policy_loss.item(), alpha_loss.item(), alpha_tlogs.item())
+
+    def save_model(self, env_name, suffix="", actor_path=None, critic_path=None):
+        # save model params
+        if not os.path.exists('models/'):
+            os.makedirs('models/')
+
+        if actor_path is None:
+            actor_path = "models/sac_actor_{}_{}".format(env_name, suffix)
+        if critic_path is None:
+            critic_path = "models/sac_critic_{}_{}".format(env_name, suffix)
+        print('Saving models to {} and {}'.format(actor_path, critic_path))
+        torch.save(self.policy.state_dict(), actor_path)
+        torch.save(self.critic.state_dict(), critic_path)
+
+    def load_model(self, actor_path, critic_path):
+        # load model params
+        print('Loading models from {} and {}'.format(actor_path, critic_path))
+        if actor_path is not None:
+            self.policy.load_state_dict(torch.load(actor_path))
+        if critic_path is not None:
+            self.critic.load_state_dict(torch.load(critic_path))

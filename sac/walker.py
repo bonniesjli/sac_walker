@@ -1,102 +1,142 @@
-from sac import SAC
-from utils import *
-from loggin import *
-from torch.multiprocessing import Pipe
+import argparse
+import datetime
+# from box import Box
+from gym import spaces
 from mlagents.envs import UnityEnvironment
 import numpy as np
-import time
-import sys
+import itertools
+import torch
+from sac import SAC
+from tensorboardX import SummaryWriter
 
-print("Python version:")
-print(sys.version)
-if (sys.version_info[0] < 3):
-    raise Exception("ERROR: ML-Agents Toolkit (v0.3 onwards) requires Python 3")
-arg1 = sys.argv[1]
-if arg1 == "linux":
-    env = UnityEnvironment(file_name = "../envs/walker_linux/walker.x86_64")
-if arg1 == "window":
-    env = UnityEnvironment(file_name = "../envs/walker_window/Unity Environment.exe")
+parser = argparse.ArgumentParser(description='PyTorch Soft Actor-Critic Args')
+parser.add_argument('--env', default="walker",
+                    help='System launching Unity ML Agents')
+parser.add_argument('--system', default="window",
+                    help='System launching Unity ML Agents')
+parser.add_argument('--policy', default="Gaussian",
+                    help='Policy Type: Gaussian | Deterministic (default: Gaussian)')
+parser.add_argument('--eval', type=bool, default=True,
+                    help='Evaluates a policy a policy every 10 episode (default: True)')
+parser.add_argument('--gamma', type=float, default=0.99, metavar='G',
+                    help='discount factor for reward (default: 0.99)')
+parser.add_argument('--tau', type=float, default=0.005, metavar='G',
+                    help='target smoothing coefficient(τ) (default: 0.005)')
+parser.add_argument('--lr', type=float, default=0.0003, metavar='G',
+                    help='learning rate (default: 0.0003)')
+parser.add_argument('--alpha', type=float, default=0.2, metavar='G',
+                    help='Temperature parameter α determines the relative importance of the entropy\
+                            term against the reward (default: 0.2)')
+parser.add_argument('--automatic_entropy_tuning', type=bool, default=False, metavar='G',
+                    help='Automaically adjust α (default: False)')
+parser.add_argument('--seed', type=int, default=123456, metavar='N',
+                    help='random seed (default: 123456)')
+parser.add_argument('--batch_size', type=int, default=256, metavar='N',
+                    help='batch size (default: 256)')
+parser.add_argument('--num_steps', type=int, default=1000001, metavar='N',
+                    help='maximum number of steps (default: 1000000)')
+parser.add_argument('--hidden_size', type=int, default=256, metavar='N',
+                    help='hidden size (default: 256)')
+parser.add_argument('--updates_per_step', type=int, default=1, metavar='N',
+                    help='model updates per simulator step (default: 1)')
+parser.add_argument('--start_steps', type=int, default=10000, metavar='N',
+                    help='Steps sampling random actions (default: 10000)')
+parser.add_argument('--target_update_interval', type=int, default=1, metavar='N',
+                    help='Value target update per no. of updates per step (default: 1)')
+parser.add_argument('--buffer_size', type=int, default=1000000, metavar='N',
+                    help='size of replay buffer (default: 10000000)')
+parser.add_argument('--cuda', action="store_true",
+                    help='run on CUDA (default: False)')
+args = parser.parse_args()
 
+# Environment
+from fetch_env import fetch_env
+env = UnityEnvironment(fetch_env(args.env, args.system))
 default_brain = env.brain_names[0]
 brain = env.brains[default_brain]
 
-def main(run):
-    """
-    :param: (str) run
-    """
-    env.reset()
+torch.manual_seed(args.seed)
+np.random.seed(args.seed)
 
-    max_t = 1.5e6
-    t_horizon = 10
-    t = 0
-    num_worker = 11
-    state_dim = 1060
-    action_dim = 39
-    agent = SAC(state_dim, action_dim, hidden_dim = 512)
+# Agent
+num_worker = 11
+state_dim = 1060
+high = np.ones(39)
+action_dim = spaces.Box(-high, high, dtype=np.float32)
+agent = SAC(state_dim, action_dim, args)
 
-    # pre_obs_norm_step = 10000
-    # reward_rms = RunningMeanStd()
-    # obs_rms = RunningMeanStd(1, state_dim)
-    # steps = 0
-    # next_obs = []
-    # print('Start to initialize observation normalization ...')
-    # while steps < pre_obs_norm_step:
-    #     steps += num_worker
-    #     actions = [np.random.randn(action_dim) for _ in range(num_worker)]
-    #     env_info = env.step(actions)[default_brain]
-    #     obs = env_info.vector_observations
-    #     for o in obs:
-    #         next_obs.append(o)
-    # next_obs = np.stack(next_obs)
-    # obs_rms.update(next_obs)
-    # print('End to initialize')
+#TesnorboardX
+writer = SummaryWriter(logdir='runs/{}_SAC_{}_{}_{}'.format(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"), args.env,
+                                                             args.policy, "autotune" if args.automatic_entropy_tuning else ""))
 
-    LOG = Logging(run)
-    LOG.create("score")
-    LOG.create("full_score")
+# Training Loop
+total_numsteps = 0
 
-    agent_r = np.zeros(num_worker)
-    buffer_r = np.zeros(num_worker)
-    env_info = env.reset(train_mode=True)[default_brain]
-    states = env_info.vector_observations
-    while t <= max_t:
-        t += 1
-        # action = agent.act((np.float32(states) - obs_rms.mean)/np.sqrt(obs_rms.var))
-        actions = agent.act(states)
-        env_info = env.step(scale_action(actions))[default_brain]
+agent_reward = np.zeros(num_worker)
+buffer_reward = np.zeros(num_worker)
+done = False
+env_info = env.reset(train_mode = True)[default_brain]
+states = env_info.vector_observations
 
-        obs = env_info.vector_observations
-        next_states = obs
-        rewards = env_info.rewards
-        dones = env_info.local_done
+while total_numsteps <= args.num_steps:
 
-        agent_r += rewards
-        for j, d in enumerate(dones):
+    actions = agent.act(states)  # Sample action from policy
+
+    env_info = env.step(actions)[default_brain] # Step
+    next_states = env_info.vector_observations
+    rewards = env_info.rewards
+    dones = env_info.local_done
+    transition = (states, actions, rewards, next_states, dones)
+    critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha = agent.step(transition)
+
+    writer.add_scalar('loss/critic_1', critic_1_loss, total_numsteps)
+    writer.add_scalar('loss/critic_2', critic_2_loss, total_numsteps)
+    writer.add_scalar('loss/policy', policy_loss, total_numsteps)
+    writer.add_scalar('loss/entropy_loss', ent_loss, total_numsteps)
+    writer.add_scalar('entropy_temprature/alpha', alpha, total_numsteps)
+
+    total_numsteps += 1
+    agent_reward += rewards
+    for j, d in enumerate(dones):
+        if dones[j]:
+            buffer_reward[j] = agent_reward[j]
+            agent_reward[j] = 0
+    states = next_states
+
+    if total_numsteps % 20 == 0:
+        writer.add_scalar('reward/train', np.mean(buffer_reward), total_numsteps)
+        print("total numsteps: {}, reward: {}".format(total_numsteps, np.mean(buffer_reward)))
+
+    # Evaluate SAC agent
+    if total_numsteps % 100 == 0 and args.eval == True:
+        agent_reward = np.zeros(num_worker)
+        buffer_reward = np.zeros(num_worker)
+        env_info = env.reset()[default_brain]
+        states = env_info.vector_observations
+        d = 0
+        while d != num_worker:
+            actions = agent.act(states, eval=True)
+            env_info = env.step(actions)[default_brain]
+
+            next_states = env_info.vector_observations
+            rewards = env_info.rewards
+            dones = env_info.local_done
+            agent_reward += rewards
+            for j, d in enumerate(dones):
                 if dones[j]:
-                    buffer_r[j] = agent_r[j]
-                    agent_r[j] = 0
+                    buffer_reward[j] = agent_reward[j]
+                    agent_reward[j] = 0
+            d = np.count_nonzero(buffer_reward)
+            states = next_states
 
-        # agent.step((np.float32(states) - obs_rms.mean)/np.sqrt(obs_rms.var),
-        #             actions,
-        #             rewards,
-        #             (np.float32(next_states) - obs_rms.mean) / np.sqrt(obs_rms.var),
-        #             dones)
-        agent.step(states, actions, rewards, next_states, dones)
+        writer.add_scalar('avg_reward/test', np.mean(buffer_reward), total_numsteps)
 
-        states = next_states
-        if t % 1000 == 0:
-            LOG.log("score", np.mean(buffer_r))
+        print("----------------------------------------")
+        print("Test Episodes: {}, Avg. Reward: {}".format(total_numsteps, np.mean(buffer_reward)))
+        print("----------------------------------------")
+        agent_reward = np.zeros(num_worker)
+        buffer_reward = np.zeros(num_worker)
+        env_info = env.reset()[default_brain]
+        states = env_info.vector_observations
 
-        if t < 10000 and t % 2000 == 0:
-            print('\rTimeStep {}\tAverage Score: {:.2f}'.format(t, LOG.mean("score", t_horizon)))
-            LOG.save_data()
-        if t % 10000 == 0:
-            print('\rTimeStep {}\tAverage Score: {:.2f}'.format(t, LOG.mean("score", t_horizon)))
-            torch.save(agent.policy_net, 'policy.pt')
-            LOG.save_data()
-
-    LOG.save_data()
-    LOG.visualize("score")
-
-if __name__ == '__main__':
-    main("run1")
+env.close()
