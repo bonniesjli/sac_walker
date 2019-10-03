@@ -13,7 +13,7 @@ if (sys.version_info[0] < 3):
     raise Exception("ERROR: ML-Agents Toolkit (v0.3 onwards) requires Python 3")
 arg1 = sys.argv[1]
 if arg1 == "linux":
-    env = UnityEnvironment(file_name = "../envs/walker_linux/pyramid.x86_64")
+    env = UnityEnvironment(file_name = "../envs/walker_linux/walker.x86_64")
 if arg1 == "window":
     env = UnityEnvironment(file_name = "../envs/walker_window/Unity Environment.exe")
 
