@@ -150,7 +150,7 @@ while total_numsteps <= args.num_steps:
                     d += 1
             states = next_states
 
-        writer.add_scalar('avg_reward/test', np.mean(buffer_reward))
+        writer.add_scalar('avg_reward/test', np.mean(buffer_reward), total_numsteps)
 
         print("----------------------------------------")
         print("Test Episodes: {}, Avg. Reward: {}".format(total_numsteps, np.mean(buffer_reward)))
