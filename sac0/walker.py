@@ -1,6 +1,6 @@
 import argparse
 import datetime
-from box import Box
+# from box import Box
 from gym import spaces
 from mlagents.envs import UnityEnvironment
 import numpy as np
